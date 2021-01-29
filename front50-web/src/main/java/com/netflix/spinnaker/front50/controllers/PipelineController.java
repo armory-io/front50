@@ -30,6 +30,7 @@ import com.netflix.spinnaker.front50.model.pipeline.Pipeline;
 import com.netflix.spinnaker.front50.model.pipeline.PipelineDAO;
 import com.netflix.spinnaker.front50.model.pipeline.PipelineTemplateDAO;
 import com.netflix.spinnaker.front50.model.pipeline.TemplateConfiguration;
+import com.netflix.spinnaker.front50.model.pipeline.Trigger;
 import com.netflix.spinnaker.front50.model.pipeline.V2TemplateConfiguration;
 import com.netflix.spinnaker.front50.validator.GenericValidationErrors;
 import com.netflix.spinnaker.front50.validator.PipelineValidator;
@@ -42,6 +43,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.support.DefaultMessageSourceResolvable;
@@ -156,9 +158,11 @@ public class PipelineController {
     if (Strings.isNullOrEmpty(pipeline.getId())
         || (boolean) pipeline.getOrDefault("regenerateCronTriggerIds", false)) {
       // ensure that cron triggers are assigned a unique identifier for new pipelines
-      pipeline.getTriggers().stream()
+      Collection<Trigger> triggers = pipeline.getTriggers();
+      triggers.stream()
           .filter(it -> "cron".equals(it.getType()))
           .forEach(it -> it.put("id", UUID.randomUUID().toString()));
+      pipeline.setTriggers(triggers);
     }
 
     return pipelineDAO.create(pipeline.getId(), pipeline);
@@ -224,8 +228,7 @@ public class PipelineController {
    */
   private void validatePipeline(final Pipeline pipeline, Boolean staleCheck) {
     // Pipelines must have an application and a name
-    if (Strings.isNullOrEmpty(pipeline.getApplication())
-        || Strings.isNullOrEmpty(pipeline.getName())) {
+    if (StringUtils.isAnyBlank(pipeline.getApplication(), pipeline.getName())) {
       throw new InvalidEntityException("A pipeline requires name and application fields");
     }
 
@@ -318,12 +321,20 @@ public class PipelineController {
 
   private static Pipeline ensureCronTriggersHaveIdentifier(Pipeline pipeline) {
     // ensure that all cron triggers have an assigned identifier
-    pipeline.getTriggers().stream()
+    Collection<Trigger> triggers = pipeline.getTriggers();
+    triggers.stream()
         .filter(it -> "cron".equalsIgnoreCase(it.getType()))
         .forEach(
-            it ->
-                it.put(
-                    "id", Optional.ofNullable(it.get("id")).orElse(UUID.randomUUID().toString())));
+            it -> {
+              String triggerId = (String) it.get("id");
+              if (triggerId == null || triggerId.isEmpty()) {
+                triggerId = UUID.randomUUID().toString();
+              }
+
+              it.put("id", triggerId);
+            });
+    pipeline.setTriggers(triggers);
+
     return pipeline;
   }
 }
