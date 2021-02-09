@@ -20,4 +20,7 @@ jobs:
       - name: Send Coverage
         env:
           COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
+          # https://www.testcontainers.org/features/configuration/#disabling-ryuk
+          TESTCONTAINERS_RYUK_DISABLED: true
+          TESTCONTAINERS_CHECKS_DISABLE: true
         run: ./gradlew coveralls
