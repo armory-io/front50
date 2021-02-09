@@ -1,5 +1,5 @@
 # Front50
-
+[![Coverage Status](https://coveralls.io/repos/github/armory-io/front50/badge.svg?branch=master)](https://coveralls.io/github/armory-io/front50?branch=master)
 [![Build Status](https://api.travis-ci.org/spinnaker/front50.svg?branch=master)](https://travis-ci.org/spinnaker/front50)
 
 Front50 is the system of record for all Spinnaker metadata, including: application, pipeline and service account configurations.
