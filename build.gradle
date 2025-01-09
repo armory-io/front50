@@ -64,7 +64,11 @@ subprojects { project ->
       compileOnly("org.projectlombok:lombok")
       annotationProcessor("org.projectlombok:lombok")
       testAnnotationProcessor("org.projectlombok:lombok")
-
+      api("org.slf4j:slf4j-api"){
+      version {
+        strictly("1.7.36")
+      }
+      }
       testImplementation("org.apache.groovy:groovy")
       testImplementation("org.spockframework:spock-core")
       testImplementation("org.springframework.boot:spring-boot-starter-test")

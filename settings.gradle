@@ -22,6 +22,9 @@
   }
 }
 
+
+
+
 rootProject.name = "front50"
 
 include 'front50-web',
