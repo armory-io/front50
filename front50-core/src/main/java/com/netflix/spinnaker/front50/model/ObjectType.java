@@ -30,32 +30,66 @@ import com.netflix.spinnaker.front50.model.snapshot.Snapshot;
 import com.netflix.spinnaker.front50.model.tag.EntityTags;
 
 public enum ObjectType {
-  PROJECT(Project.class, "projects", "project-metadata.json"),
-  PIPELINE(Pipeline.class, "pipelines", "pipeline-metadata.json"),
-  STRATEGY(Pipeline.class, "pipeline-strategies", "pipeline-strategy-metadata.json"),
+  PROJECT(Project.class, "projects", "project-metadata.json", "specification.json"),
+  PIPELINE(Pipeline.class, "pipelines", "pipeline-metadata.json", "specification.json"),
+  STRATEGY(
+      Pipeline.class,
+      "pipeline-strategies",
+      "pipeline-strategy-metadata.json",
+      "specification.json"),
   PIPELINE_TEMPLATE(
-      PipelineTemplate.class, "pipeline-templates", "pipeline-template-metadata.json"),
-  NOTIFICATION(Notification.class, "notifications", "notification-metadata.json"),
-  SERVICE_ACCOUNT(ServiceAccount.class, "serviceAccounts", "serviceAccount-metadata.json"),
-  APPLICATION(Application.class, "applications", "application-metadata.json"),
-  // TODO(ewiseblatt) Add migration logic to allow GCS to use application-permission.json like the
-  // other providers.
+      PipelineTemplate.class,
+      "pipeline-templates",
+      "pipeline-template-metadata.json",
+      "specification.json"),
+  NOTIFICATION(
+      Notification.class, "notifications", "notification-metadata.json", "specification.json"),
+  SERVICE_ACCOUNT(
+      ServiceAccount.class,
+      "serviceAccounts",
+      "serviceAccount-metadata.json",
+      "specification.json"),
+
+  APPLICATION(Application.class, "applications", "application-metadata.json", "specification.json"),
   APPLICATION_PERMISSION(
-      Application.Permission.class, "applications", "application-permission.json"),
-  SNAPSHOT(Snapshot.class, "snapshots", "snapshot.json"),
-  ENTITY_TAGS(EntityTags.class, "tags", "entity-tags-metadata.json"),
-  DELIVERY(Delivery.class, "delivery", "delivery-metadata.json"),
-  PLUGIN_INFO(PluginInfo.class, "pluginInfo", "plugin-info-metadata.json"),
+      Application.Permission.class,
+      "applications",
+      "application-permission.json",
+      "permission.json"),
+  SNAPSHOT(Snapshot.class, "snapshots", "snapshot.json", "specification.json"),
+  ENTITY_TAGS(EntityTags.class, "tags", "entity-tags-metadata.json", "specification.json"),
+  DELIVERY(Delivery.class, "delivery", "delivery-metadata.json", "specification.json"),
+  PLUGIN_INFO(PluginInfo.class, "pluginInfo", "plugin-info-metadata.json", "specification.json"),
   PLUGIN_VERSIONS(
-      ServerGroupPluginVersions.class, "pluginVersions", "plugin-versions-metadata.json");
+      ServerGroupPluginVersions.class,
+      "pluginVersions",
+      "plugin-versions-metadata.json",
+      "specification.json");
 
   public final Class<? extends Timestamped> clazz;
   public final String group;
   public final String defaultMetadataFilename;
+  public final String gcsMetadataFilename;
 
   ObjectType(Class<? extends Timestamped> clazz, String group, String defaultMetadataFilename) {
+    this(clazz, group, defaultMetadataFilename, null);
+  }
+
+  ObjectType(
+      Class<? extends Timestamped> clazz,
+      String group,
+      String defaultMetadataFilename,
+      String gcsMetadataFilename) {
     this.clazz = clazz;
     this.group = group;
     this.defaultMetadataFilename = defaultMetadataFilename;
+    this.gcsMetadataFilename = gcsMetadataFilename;
+  }
+
+  public String getDefaultMetadataFilename(boolean useGcsMetadataFilename) {
+    if (useGcsMetadataFilename && this.gcsMetadataFilename != null) {
+      return this.gcsMetadataFilename;
+    }
+    return this.defaultMetadataFilename;
   }
 }

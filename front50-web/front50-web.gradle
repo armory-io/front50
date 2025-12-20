@@ -32,10 +32,11 @@ dependencies {
   implementation "io.spinnaker.fiat:fiat-core:$fiatVersion"
   implementation "io.spinnaker.kork:kork-artifacts"
   implementation "io.spinnaker.kork:kork-config"
+  implementation "io.spinnaker.kork:kork-retrofit"
   implementation "io.spinnaker.kork:kork-web"
   implementation "io.spinnaker.kork:kork-exceptions"
   implementation "com.squareup.retrofit:converter-jackson"
-  implementation "io.swagger:swagger-annotations"
+  implementation "io.swagger.core.v3:swagger-annotations"
   implementation "commons-codec:commons-codec"
   implementation "javax.validation:validation-api"
 
@@ -46,7 +47,7 @@ dependencies {
   testImplementation project(":front50-sql")
   testImplementation "io.spinnaker.kork:kork-sql-test"
   testImplementation "io.reactivex:rxjava"
-  testImplementation "org.codehaus.groovy:groovy-json"
+  testImplementation "org.apache.groovy:groovy-json"
 
   // Add each included cloud provider project as a runtime dependency
   gradle.includedProviderProjects.each {

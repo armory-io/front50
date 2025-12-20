@@ -16,7 +16,9 @@
 
 package com.netflix.spinnaker.front50.model
 
+import com.fasterxml.jackson.core.JsonProcessingException
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.netflix.spectator.api.Id
 import com.netflix.spectator.api.Registry
 import com.netflix.spinnaker.config.Front50SqlProperties
 import com.netflix.spinnaker.front50.api.model.Timestamped
@@ -91,6 +93,8 @@ class SqlStorageService(
     private val lastModifiedField = field("last_modified_at", Long::class.java)
   }
 
+  private val invalidJsonCounterId: Id = registry.createId("sqlStorageService.invalidJson");
+
   override fun supportsVersioning(): Boolean {
     return true
   }
@@ -145,14 +149,18 @@ class SqlStorageService(
             }
           }
 
-          records.map {
-            objectMapper.readValue(
-              it.getValue(field("body", String::class.java)),
-              objectType.clazz as Class<T>
-            ).apply {
-              this.createdAt = it.getValue(field("created_at", Long::class.java))
-
-              this.lastModified = it.getValue(field("last_modified_at", Long::class.java))
+          records.mapNotNull {
+            val body = it.getValue(field("body", String::class.java))
+            try  {
+              objectMapper.readValue(body, objectType.clazz as Class<T>
+              ).apply {
+                this.createdAt = it.getValue(field("created_at", Long::class.java))
+                this.lastModified = it.getValue(field("last_modified_at", Long::class.java))
+              }
+            } catch (e: JsonProcessingException) {
+              log.error("unable to deserialize {}", objectType.name, e)
+              registry.counter(invalidJsonCounterId.withTag("objectType", objectType.group)).increment();
+              null
             }
           }
         }
@@ -208,10 +216,14 @@ class SqlStorageService(
         } else {
           notDeletedKey
         }
-        resultMap[insertInto]!!.add(
-          record.get("body", String::class.java)
-            .let { objectMapper.readValue(it, objectType.clazz as Class<T>)
-            })
+        val bodyString = record.get("body", String::class.java)
+        try {
+          val thisObject = objectMapper.readValue(bodyString, objectType.clazz as Class<T>)
+          resultMap[insertInto]!!.add(thisObject)
+        } catch (e: JsonProcessingException) {
+          log.error("unable to deserialize {}", objectType.name, e)
+          registry.counter(invalidJsonCounterId.withTag("objectType", objectType.group)).increment();
+        }
       }
     }
 
@@ -246,63 +258,58 @@ class SqlStorageService(
   }
 
   override fun <T : Timestamped> storeObjects(objectType: ObjectType, allItems: Collection<T>) {
-    // using a lower `chunkSize` to avoid exceeding default packet size limits.
-    allItems.chunked(100).forEach { items ->
-      try {
-        withPool(poolName) {
-          jooq.transactional(sqlRetryProperties.transactions) { ctx ->
+    withPool(poolName) {
+      jooq.transactional(sqlRetryProperties.transactions) { ctx ->
+        // using a lower `chunkSize` to avoid exceeding default packet size limits.
+        allItems.chunked(100).forEach { items ->
+          try {
+            ctx.batch(
+              items.map { item ->
+                val insertPairs = definitionsByType[objectType]!!.getInsertPairs(
+                  objectMapper, item.id.toLowerCase(), item
+                )
+                val updatePairs = definitionsByType[objectType]!!.getUpdatePairs(insertPairs)
+
+                ctx.insertInto(
+                  table(definitionsByType[objectType]!!.tableName),
+                  *insertPairs.keys.map { field(it) }.toTypedArray()
+                )
+                  .values(insertPairs.values)
+                  .onConflict(field("id", String::class.java))
+                  .doUpdate()
+                  .set(updatePairs.mapKeys { field(it.key) })
+              }
+            ).execute()
+          } catch (e: SQLDialectNotSupportedException) {
+            for (item in items) {
+              storeSingleObject(objectType, item.id.toLowerCase(), item)
+            }
+          }
+
+          if (definitionsByType[objectType]!!.supportsHistory) {
             try {
               ctx.batch(
                 items.map { item ->
-                  val insertPairs = definitionsByType[objectType]!!.getInsertPairs(
-                    objectMapper, item.id.toLowerCase(), item
+                  val historyPairs = definitionsByType[objectType]!!.getHistoryPairs(
+                    objectMapper, clock, item.id.toLowerCase(), item
                   )
-                  val updatePairs = definitionsByType[objectType]!!.getUpdatePairs(insertPairs)
 
-                  ctx.insertInto(
-                    table(definitionsByType[objectType]!!.tableName),
-                    *insertPairs.keys.map { field(it) }.toTypedArray()
-                  )
-                    .values(insertPairs.values)
-                    .onConflict(field("id", String::class.java))
-                    .doUpdate()
-                    .set(updatePairs.mapKeys { field(it.key) })
+                  ctx
+                    .insertInto(
+                      table(definitionsByType[objectType]!!.historyTableName),
+                      *historyPairs.keys.map { field(it) }.toTypedArray()
+                    )
+                    .values(historyPairs.values)
+                    .onDuplicateKeyIgnore()
                 }
               ).execute()
             } catch (e: SQLDialectNotSupportedException) {
               for (item in items) {
-                storeSingleObject(objectType, item.id.toLowerCase(), item)
-              }
-            }
-
-            if (definitionsByType[objectType]!!.supportsHistory) {
-              try {
-                ctx.batch(
-                  items.map { item ->
-                    val historyPairs = definitionsByType[objectType]!!.getHistoryPairs(
-                      objectMapper, clock, item.id.toLowerCase(), item
-                    )
-
-                    ctx
-                      .insertInto(
-                        table(definitionsByType[objectType]!!.historyTableName),
-                        *historyPairs.keys.map { field(it) }.toTypedArray()
-                      )
-                      .values(historyPairs.values)
-                      .onDuplicateKeyIgnore()
-                  }
-                ).execute()
-              } catch (e: SQLDialectNotSupportedException) {
-                for (item in items) {
-                  storeSingleObjectHistory(objectType, item.id.toLowerCase(), item)
-                }
+                storeSingleObjectHistory(objectType, item.id.toLowerCase(), item)
               }
             }
           }
         }
-      } catch (e: Exception) {
-        log.error("Unable to store objects (objectType: {}, objectKeys: {})", objectType, items.map { it.id })
-        throw e
       }
     }
   }

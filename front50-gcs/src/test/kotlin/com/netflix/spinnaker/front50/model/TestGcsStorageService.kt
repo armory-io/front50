@@ -18,6 +18,7 @@
 package com.netflix.spinnnaker.front50.model
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.google.cloud.storage.Blob
 import com.google.cloud.storage.BlobId
 import com.google.cloud.storage.BlobInfo
 import com.google.cloud.storage.Bucket
@@ -50,6 +51,8 @@ import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.Timeout
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.MethodSource
 import strikt.api.expectCatching
 import strikt.api.expectThat
 import strikt.assertions.all
@@ -64,6 +67,7 @@ import strikt.assertions.isNotNull
 import strikt.assertions.isSuccess
 import strikt.assertions.isTrue
 import strikt.assertions.startsWith
+import strikt.assertions.endsWith
 
 class GcsStorageServiceTest {
 
@@ -71,7 +75,26 @@ class GcsStorageServiceTest {
     private const val BUCKET_NAME = "myBucket"
     private const val BUCKET_LOCATION = "bucketLocation"
     private const val BASE_PATH = "my/base/path"
-    private const val DATA_FILENAME = "my-file.txt"
+    private val DATA_FILENAME = "specification.json";
+    private val PERMISSION_DATA_FILENAME = "permission.json";
+
+    @JvmStatic
+    fun objectTypes() : List<Array<Any>> {
+      return listOf(
+        arrayOf(ObjectType.PROJECT.group, ObjectType.PROJECT, """{"name": "APP NAME","email": "sample@example.com"}"""),
+        arrayOf(ObjectType.PIPELINE.group,ObjectType.PIPELINE, """{"name": "APP NAME","email": "sample@example.com"}"""),
+        arrayOf(ObjectType.STRATEGY.group,ObjectType.STRATEGY, """{"name": "APP NAME","email": "sample@example.com"}"""),
+        arrayOf(ObjectType.PIPELINE_TEMPLATE.group,ObjectType.PIPELINE_TEMPLATE, """{"name": "APP NAME","email": "sample@example.com"}"""),
+        arrayOf(ObjectType.NOTIFICATION.group,ObjectType.NOTIFICATION, """{"name": "APP NAME","email": "sample@example.com"}"""),
+        arrayOf(ObjectType.SERVICE_ACCOUNT.group,ObjectType.SERVICE_ACCOUNT, """{"name": "ServiceAccount","memberOf": ["myApp-prod","myApp-qa"]}"""),
+        arrayOf(ObjectType.APPLICATION.group,ObjectType.APPLICATION, """{"name": "APP NAME","email": "sample@example.com"}"""),
+        arrayOf(ObjectType.SNAPSHOT.group,ObjectType.SNAPSHOT, """{"application": "APP NAME","account": "someAccount"}"""),
+        arrayOf(ObjectType.ENTITY_TAGS.group,ObjectType.ENTITY_TAGS, """{"idPattern": "entityType__entityId__account__region"}"""),
+        arrayOf(ObjectType.DELIVERY.group,ObjectType.DELIVERY, """{"application": "APP NAME"}"""),
+        arrayOf(ObjectType.PLUGIN_INFO.group,ObjectType.PLUGIN_INFO, """{"description": "APP NAME","provider": "github"}"""),
+        arrayOf(ObjectType.PLUGIN_VERSIONS.group,ObjectType.PLUGIN_VERSIONS, """{"serverGroupName": "myapp","location": "us-west-2"}""")
+      )
+    }
   }
 
   private lateinit var gcs: Storage
@@ -158,23 +181,35 @@ class GcsStorageServiceTest {
   }
 
   @Test
-  fun `loadObject fetches previously stored data`() {
+  fun `loadObject fetches previously stored data - ApplicationPermissions`() {
 
-    val path = "$BASE_PATH/${ObjectType.APPLICATION.group}/plumpstuff/$DATA_FILENAME"
+    val path = "$BASE_PATH/${ObjectType.APPLICATION_PERMISSION.group}/plumpstuff/$PERMISSION_DATA_FILENAME"
     writeFile(
       path,
       """
         {
           "name": "APP NAME",
-          "email": "sample@example.com"
+          "permissions": {}
         }
       """
     )
 
-    val application: Application = storageService.loadObject(ObjectType.APPLICATION, "plumpstuff")
+    val applicationPermission: Application.Permission = storageService.loadObject(ObjectType.APPLICATION_PERMISSION, "plumpstuff")
 
-    expectThat(application.name).isEqualTo("APP NAME")
-    expectThat(application.email).isEqualTo("sample@example.com")
+    expectThat(applicationPermission.name).isEqualTo("APP NAME")
+  }
+
+  @ParameterizedTest(name = "loadObject fetches previously stored data of {0}")
+  @MethodSource("objectTypes")
+  fun `loadObject fetches previously stored data - All Types`(group: String, objectType: ObjectType, content: String) {
+    val path = "$BASE_PATH/${objectType.group}/plumpstuff/$DATA_FILENAME"
+    writeFile(
+      path,
+      content
+    )
+    expectCatching {
+      val type: Any = storageService.loadObject(objectType, "plumpstuff")
+    }.isSuccess()
   }
 
   @Test
@@ -230,6 +265,7 @@ class GcsStorageServiceTest {
 
     expectThat(blob).isNotNull()
     expectThat(blob!!.contentType).isEqualTo("application/json")
+    expectThat(blob.name).endsWith("/$DATA_FILENAME")
   }
 
   @Test
@@ -255,10 +291,12 @@ class GcsStorageServiceTest {
     storageService.storeObject(ObjectType.APPLICATION, "app1", Application())
     storageService.storeObject(ObjectType.APPLICATION, "app2", Application())
     storageService.storeObject(ObjectType.APPLICATION, "app3", Application())
-
+    storageService.storeObject(ObjectType.APPLICATION_PERMISSION,"app3",Application.Permission())
     val keys = storageService.listObjectKeys(ObjectType.APPLICATION)
+    val keysWithPermissions = storageService.listObjectKeys(ObjectType.APPLICATION_PERMISSION)
 
     expectThat(keys).containsKeys("app1", "app2", "app3")
+    expectThat(keysWithPermissions).containsKeys("app3")
   }
 
   @Test
@@ -269,6 +307,8 @@ class GcsStorageServiceTest {
     storageService.storeObject(ObjectType.APPLICATION, "app3", Application())
     storageService.storeObject(ObjectType.DELIVERY, "delivery", Delivery())
     storageService.storeObject(ObjectType.PIPELINE, "pipeline", Pipeline())
+    storageService.storeObject(ObjectType.APPLICATION_PERMISSION,"app4",Application.Permission())
+
 
     val keys = storageService.listObjectKeys(ObjectType.APPLICATION)
 
@@ -294,14 +334,19 @@ class GcsStorageServiceTest {
 
     clock.setEpochMilli(111L)
     storageService.storeObject(ObjectType.APPLICATION, "plumpstuff", Application().apply { name = "version1" })
+    storageService.storeObject(ObjectType.APPLICATION_PERMISSION, "plumpstuff", Application.Permission().apply { name = "versionPerm1" })
+
     clock.setEpochMilli(222L)
     storageService.storeObject(ObjectType.APPLICATION, "plumpstuff", Application().apply { name = "version2" })
+    storageService.storeObject(ObjectType.APPLICATION_PERMISSION, "plumpstuff", Application.Permission().apply { name = "versionPerm2" })
     clock.setEpochMilli(333L)
     storageService.storeObject(ObjectType.APPLICATION, "plumpstuff", Application().apply { name = "version3" })
+    storageService.storeObject(ObjectType.APPLICATION_PERMISSION, "plumpstuff", Application.Permission().apply { name = "versionPerm3" })
 
     val versions: List<Application> =
       storageService.listObjectVersions<Application>(ObjectType.APPLICATION, "plumpstuff", 100).toList()
-
+    val permVersions: List<Application.Permission> =
+      storageService.listObjectVersions<Application.Permission>(ObjectType.APPLICATION_PERMISSION, "plumpstuff", 100).toList()
     expectThat(versions).hasSize(3)
     expectThat(versions[0].name).isEqualToIgnoringCase("version3")
     expectThat(versions[0].updateTs).isEqualTo("333")
@@ -309,12 +354,22 @@ class GcsStorageServiceTest {
     expectThat(versions[1].updateTs).isEqualTo("222")
     expectThat(versions[2].name).isEqualToIgnoringCase("version1")
     expectThat(versions[2].updateTs).isEqualTo("111")
+
+    expectThat(permVersions).hasSize(3)
+    expectThat(permVersions[0].name).isEqualToIgnoringCase("versionPerm3")
+    expectThat(permVersions[0].lastModified).isEqualTo(333)
+    expectThat(permVersions[1].name).isEqualToIgnoringCase("versionPerm2")
+    expectThat(permVersions[1].lastModified).isEqualTo(222)
+    expectThat(permVersions[2].name).isEqualToIgnoringCase("versionPerm1")
+    expectThat(permVersions[2].lastModified).isEqualTo(111)
   }
 
   @Test
   fun `listObjectVersions ignores similar filenames`() {
 
     writeFile("$BASE_PATH/${ObjectType.APPLICATION.group}/plumpstuff/$DATA_FILENAME", """{ "name": "the good one" }""")
+    writeFile("$BASE_PATH/${ObjectType.APPLICATION.group}/plumpstuff/" +
+      ObjectType.APPLICATION_PERMISSION.getDefaultMetadataFilename(true), """{ "name": "the good one but permissions file" }""")
     writeFile("$BASE_PATH/${ObjectType.APPLICATION.group}/plumpstuff/unknownFilename.txt", """{}""")
     writeFile("$BASE_PATH${ObjectType.APPLICATION.group}/plumpstuff/$DATA_FILENAME", """{}""")
     writeFile("$BASE_PATH/${ObjectType.APPLICATION.group}plumpstuff/$DATA_FILENAME", """{}""")
@@ -333,6 +388,7 @@ class GcsStorageServiceTest {
     storageService.storeObject(ObjectType.APPLICATION, "app1", Application().apply { name = "app1v1" })
     storageService.storeObject(ObjectType.APPLICATION, "app1", Application().apply { name = "app1v2" })
     storageService.storeObject(ObjectType.APPLICATION, "app1", Application().apply { name = "app1v3" })
+    storageService.storeObject(ObjectType.APPLICATION_PERMISSION, "app1", Application.Permission().apply { name = "perm1" })
     storageService.storeObject(ObjectType.APPLICATION, "app2", Application().apply { name = "app2" })
     storageService.storeObject(ObjectType.APPLICATION, "app3", Application().apply { name = "app3" })
     storageService.storeObject(ObjectType.PIPELINE, "app1", Application().apply { name = "app1" })
@@ -455,6 +511,16 @@ class GcsStorageServiceTest {
     val updateStarted = lock.newCondition()
     val finishUpdate = lock.newCondition()
     val updateTaskCompleted = lock.newCondition()
+
+    val lastModified: Blob = mockk()
+    val blobBuilder: Blob.Builder = mockk()
+    val updatedBlob: Blob = mockk()
+
+    every { lastModified.toBuilder() } returns blobBuilder
+    every { blobBuilder.setMetadata(any()) } returns blobBuilder
+    every { blobBuilder.build() } returns updatedBlob
+
+    every { gcs.get(any<BlobId>()) } answers { lastModified }
 
     // When the service tries to update last-modified, hold until we call `finishUpdate.signal()`
     every { gcs.update(any<BlobInfo>()) } answers {

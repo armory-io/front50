@@ -18,6 +18,7 @@ plugins {
   id 'io.spinnaker.project' version "$spinnakerGradleVersion" apply false
   id "org.jetbrains.kotlin.jvm" version "$kotlinVersion" apply false
   id "org.jetbrains.kotlin.plugin.allopen" version "$kotlinVersion" apply false
+
 }
 
 allprojects {
@@ -64,7 +65,7 @@ subprojects { project ->
       annotationProcessor("org.projectlombok:lombok")
       testAnnotationProcessor("org.projectlombok:lombok")
 
-      testImplementation("org.codehaus.groovy:groovy")
+      testImplementation("org.apache.groovy:groovy")
       testImplementation("org.spockframework:spock-core")
       testImplementation("org.springframework.boot:spring-boot-starter-test")
       testImplementation("org.spockframework:spock-spring")
@@ -73,13 +74,6 @@ subprojects { project ->
       testRuntimeOnly("cglib:cglib-nodep")
       testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine")
       testRuntimeOnly("org.objenesis:objenesis")
-    }
-    // Keep this constraint till all other components get bumped up to this version and subsequently updated in the kork.
-    configurations.all {
-      resolutionStrategy.force 'com.google.apis:google-api-services-storage:v1-rev20200326-1.30.9'
-      resolutionStrategy.force 'com.google.auth:google-auth-library-oauth2-http:0.20.0'
-      // TODO(plumpy): remove version once added to kork
-      resolutionStrategy.force 'com.google.cloud:google-cloud-storage:1.108.0'
     }
   }
 }

@@ -31,6 +31,8 @@ import com.google.common.collect.ImmutableMap
 import com.google.common.util.concurrent.Futures
 import com.netflix.spinnaker.front50.api.model.Timestamped
 import com.netflix.spinnaker.kork.web.exceptions.NotFoundException
+import net.logstash.logback.argument.StructuredArguments
+import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.time.Duration
 import java.util.concurrent.ExecutorService
@@ -38,8 +40,6 @@ import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import javax.annotation.PostConstruct
-import net.logstash.logback.argument.StructuredArguments
-import org.slf4j.LoggerFactory
 
 class GcsStorageService(
   private val storage: Storage,
@@ -127,12 +127,15 @@ class GcsStorageService(
 
     try {
       val rootDirectory = daoRoot(objectType)
+
       storage.list(bucketName, BlobListOption.prefix("$rootDirectory/"))
         .iterateAll()
         .forEach { blob ->
-          val objectKey = getObjectKey(blob, rootDirectory)
-          if (objectKey != null) {
-            results.put(objectKey, blob.updateTime)
+          if (blob.name.endsWith("/"+ objectType.getDefaultMetadataFilename(true))) {
+            val objectKey = getObjectKey(blob, rootDirectory, objectType.getDefaultMetadataFilename(true))
+            if (objectKey != null) {
+              results.put(objectKey, blob.updateTime)
+            }
           }
         }
     } catch (e: Exception) {
@@ -142,11 +145,11 @@ class GcsStorageService(
     return results.build()
   }
 
-  private fun getObjectKey(blob: Blob, rootDirectory: String): String? {
+  private fun getObjectKey(blob: Blob, rootDirectory: String, defaultMetadataKey: String): String? {
     val name = blob.name
-    return if (!name.startsWith("$rootDirectory/") || !name.endsWith("/$dataFilename")) {
+    return if (!name.startsWith("$rootDirectory/") || !name.endsWith("/$defaultMetadataKey")) {
       null
-    } else name.substring(rootDirectory.length + 1, name.length - dataFilename.length - 1)
+    } else name.substring(rootDirectory.length + 1, name.length - defaultMetadataKey.length - 1)
   }
 
   override fun <T : Timestamped> listObjectVersions(
@@ -203,7 +206,11 @@ class GcsStorageService(
     try {
       // Calling update() is enough to change the modification time on the file, which is all we
       // care about. It doesn't matter if we don't actually specify any fields to change.
-      storage.update(blobInfo)
+
+      //if last-modified does not exist, throw exception to create it
+      val lastModified = storage.get(lastModifiedBlobId(objectType)) ?: throw StorageException(404, "no object $blobInfo.bucket/$blobInfo.name")
+      val lastUpdated = lastModified.toBuilder().setMetadata(mapOf("updateTrigger" to System.currentTimeMillis().toString())).build()
+      storage.update(lastUpdated)
     } catch (e: Exception) {
       when {
         e is StorageException && e.code == 404 ->
@@ -280,7 +287,7 @@ class GcsStorageService(
   }
 
   private fun pathForKey(objectType: ObjectType, key: String): String {
-    return "${daoRoot(objectType)}/$key/$dataFilename"
+    return "${daoRoot(objectType)}/$key/"+ objectType.getDefaultMetadataFilename(true)
   }
 
   private fun lastModifiedBlobId(objectType: ObjectType): BlobId {

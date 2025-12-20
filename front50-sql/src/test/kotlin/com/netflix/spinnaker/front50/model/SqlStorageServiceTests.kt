@@ -17,7 +17,7 @@
 package com.netflix.spinnaker.front50.model
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.netflix.spectator.api.NoopRegistry
+import com.netflix.spectator.api.DefaultRegistry
 import com.netflix.spinnaker.config.Front50SqlProperties
 import com.netflix.spinnaker.front50.api.model.Timestamped
 import com.netflix.spinnaker.front50.api.model.pipeline.Pipeline;
@@ -30,10 +30,14 @@ import dev.minutest.junit.JUnit5Minutests
 import dev.minutest.rootContext
 import java.time.Clock
 import org.jooq.SQLDialect
+import org.jooq.exception.DataAccessException
 import org.jooq.impl.DSL
+import org.jooq.impl.DSL.field
+import org.jooq.impl.DSL.table
 import strikt.api.expectThat
 import strikt.api.expectThrows
 import strikt.assertions.hasSize
+import strikt.assertions.isEmpty
 import strikt.assertions.isEqualTo
 import strikt.assertions.isNotEmpty
 import strikt.assertions.isNotEqualTo
@@ -51,9 +55,12 @@ internal object SqlStorageServiceTests : JUnit5Minutests {
       jooqConfig.jdbcUrl,
       jooqConfig.dialect
     )
+
+    val registry = DefaultRegistry()
+
     val sqlStorageService = SqlStorageService(
       ObjectMapper(),
-      NoopRegistry(),
+      registry,
       jooq,
       Clock.systemDefaultZone(),
       SqlRetryProperties(),
@@ -137,6 +144,11 @@ internal object SqlStorageServiceTests : JUnit5Minutests {
       }
 
       context("Pipeline") {
+
+        after {
+          registry.reset()
+        }
+
         test("create, update and delete a pipeline") {
           // verify that a pipeline can be created
           sqlStorageService.storeObject(
@@ -184,8 +196,39 @@ internal object SqlStorageServiceTests : JUnit5Minutests {
           }
         }
 
+        test("bulk create pipelines atomically") {
+          // verify that pipelines can be bulk created
+          val pipelines = (1..500).map { idx ->
+            Pipeline().apply {
+              id = "pipeline${idx}"
+              name = "pipeline${idx}"
+              lastModified = 100 + idx.toLong()
+              lastModifiedBy = "test"
+              setApplication("application")
+            }
+          }
+
+          // set lastModifiedBy of one of the pipelines to null in order to force an error
+          // and make sure no pipelines are added since additions are done in a single transaction
+          pipelines[250].lastModifiedBy = null
+          expectThrows<DataAccessException> {
+            sqlStorageService.storeObjects(ObjectType.PIPELINE,pipelines)
+            expectThat(
+              jooq.selectCount().from("pipelines").fetchOne(0, Int::class.java)
+            ).isEqualTo(0)
+          }
+
+          // Reset lastModifiedBy to ensure successful bulk creation
+          pipelines[250].lastModifiedBy = "test"
+          sqlStorageService.storeObjects(ObjectType.PIPELINE,pipelines)
+
+          val storedPipelines = sqlStorageService.loadObjects<Pipeline>(ObjectType.PIPELINE, pipelines.map { it.id });
+          expectThat(storedPipelines.size).isEqualTo(500);
+          expectThat(storedPipelines.map { it.id }).isEqualTo(pipelines.map { it.id })
+        }
+
         var lastModifiedMs : Long = 100
-        test("bulk load pipelines") {
+        test("loadObjects basic behavior") {
           val objectKeys = mutableSetOf<String>()
           val lastModifiedList = mutableSetOf<Long>()
           (1..10).forEach {
@@ -218,9 +261,56 @@ internal object SqlStorageServiceTests : JUnit5Minutests {
           expectThat(
             pipelines.map { it.lastModified }.toSet()
           ).isEqualTo(lastModifiedList)
+          expectThat(registry.counter("sqlStorageService.invalidJson", "objectType", "pipelines").count()).isEqualTo(0);
         }
 
-        test("load pipelines newer than") {
+        test("loadObjects with malformed pipelines") {
+          // populate one record that fails to deserialize
+          val lastModified: Long = Instant.now().toEpochMilli()
+
+          // Can't use storeObject since it serializes a valid object...
+          val invalidObjectKey = "new-id-pipeline001-busted"
+          val bustedPipeline = mapOf("id" to invalidObjectKey,
+                                     "name" to "new-pipeline001-busted",
+                                     "application" to "application001",
+                                     "body" to "not json",
+                                     "created_at" to lastModified,
+                                     "last_modified_at" to lastModified,
+                                     "last_modified_by" to "test-user",
+                                     "is_deleted" to false)
+          jooq.insertInto(table("pipelines"), *bustedPipeline.keys.map { field(it) }.toTypedArray())
+            .values(bustedPipeline.values)
+            .execute()
+
+          val onlyInvalid = sqlStorageService.loadObjects<Pipeline>(
+            ObjectType.PIPELINE,
+            listOf(invalidObjectKey)
+          )
+          expectThat(onlyInvalid).isEmpty()
+          expectThat(registry.counter("sqlStorageService.invalidJson", "objectType", "pipelines").count()).isEqualTo(1);
+
+          // Add a valid pipeline and repeat.  Make sure we get only the valid pipeline.
+          val validObjectKey = "new-id-pipeline002-valid"
+          sqlStorageService.storeObject(
+            ObjectType.PIPELINE,
+            validObjectKey,
+            Pipeline().apply {
+              this.setId(validObjectKey)
+              this.setName("new-pipeline002")
+              this.setLastModified(lastModified)
+              this.setApplication("application001")
+            }
+          )
+
+          val withValidPipeline = sqlStorageService.loadObjects<Pipeline>(
+            ObjectType.PIPELINE,
+            listOf(invalidObjectKey, validObjectKey)
+          )
+          expectThat(withValidPipeline.map { it.id }.toList()).isEqualTo(listOf(validObjectKey))
+          expectThat(registry.counter("sqlStorageService.invalidJson", "objectType", "pipelines").count()).isEqualTo(2);
+        }
+
+        test("loadObjectsNewerThan basic behavior") {
           // populate 10 records <= the threshold and 5 newer than the threshold
           // make sure loadObjectsNewerThan returns 5
           val lastModifiedThreshold: Long = Instant.now().toEpochMilli()
@@ -269,6 +359,7 @@ internal object SqlStorageServiceTests : JUnit5Minutests {
             lastModifiedThreshold
           )
           verifyNewerThan(newerItems, newObjectKeys, emptySet())
+          expectThat(registry.counter("sqlStorageService.invalidJson", "objectType", "pipelines").count()).isEqualTo(0);
 
           // Delete a newer item and verify the behavior
           val newIdToDelete = newObjectKeys.first()
@@ -301,6 +392,51 @@ internal object SqlStorageServiceTests : JUnit5Minutests {
             lastModifiedThreshold
           )
           verifyNewerThan(afterModifyOlder, newObjectKeys + oldIdToModify, setOf(newIdToDelete, oldIdToDelete))
+        }
+
+        test("loadObjectsNewerThan with malformed pipelines") {
+          // populate one record that's newer than the threshold that fails to deserialize
+          val lastModifiedThreshold: Long = Instant.now().toEpochMilli()
+
+          // Can't use storeObject since it serializes a valid object...
+          val bustedPipeline = mapOf("id" to "new-id-pipeline001-busted",
+                                     "name" to "new-pipeline001-busted",
+                                     "application" to "application001",
+                                     "body" to "not json",
+                                     "created_at" to lastModifiedThreshold + 1,
+                                     "last_modified_at" to lastModifiedThreshold + 1,
+                                     "last_modified_by" to "test-user",
+                                     "is_deleted" to false)
+          jooq.insertInto(table("pipelines"), *bustedPipeline.keys.map { field(it) }.toTypedArray())
+            .values(bustedPipeline.values)
+            .execute()
+
+          val onlyInvalid: Map<String, List<Pipeline>> = sqlStorageService.loadObjectsNewerThan(
+            ObjectType.PIPELINE,
+            lastModifiedThreshold
+          )
+          verifyNewerThan(onlyInvalid, setOf(), setOf())
+          expectThat(registry.counter("sqlStorageService.invalidJson", "objectType", "pipelines").count()).isEqualTo(1);
+
+          // Add a valid pipeline and repeat.  Make sure we get only the valid pipeline.
+          val objectKey = "new-id-pipeline002-valid"
+          sqlStorageService.storeObject(
+            ObjectType.PIPELINE,
+            objectKey,
+            Pipeline().apply {
+              this.setId(objectKey)
+              this.setName("new-pipeline002")
+              this.setLastModified(lastModifiedThreshold + 1)
+              this.setApplication("application001")
+            }
+          )
+
+          val withValidPipeline: Map<String, List<Pipeline>> = sqlStorageService.loadObjectsNewerThan(
+            ObjectType.PIPELINE,
+            lastModifiedThreshold
+          )
+          verifyNewerThan(withValidPipeline, setOf(objectKey), setOf())
+          expectThat(registry.counter("sqlStorageService.invalidJson", "objectType", "pipelines").count()).isEqualTo(2);
         }
       }
 
